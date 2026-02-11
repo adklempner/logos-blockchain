@@ -1,0 +1,52 @@
+# syntax=docker/dockerfile:1
+
+ARG LB_CIRCUITS_VERSION=v0.4.1
+
+# ===========================
+# CIRCUITS DOWNLOAD
+# ===========================
+
+FROM alpine:latest AS circuits
+
+ARG LB_CIRCUITS_VERSION
+
+WORKDIR /logos-blockchain
+COPY scripts/setup-logos-blockchain-circuits.sh scripts/
+RUN apk add --no-cache curl bash
+RUN scripts/setup-logos-blockchain-circuits.sh "$LB_CIRCUITS_VERSION" "/opt/circuits"
+
+# ===========================
+# BUILD FROM SOURCE
+# ===========================
+
+FROM rust:1.93.0-bookworm AS builder
+
+RUN apt-get update && apt-get install -y clang libclang-dev && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /logos-blockchain
+COPY . .
+COPY --from=circuits /opt/circuits /opt/circuits
+
+ENV LOGOS_BLOCKCHAIN_CIRCUITS=/opt/circuits
+
+RUN cargo build --release --package logos-blockchain-node && \
+    cp target/release/logos-blockchain-node /usr/local/bin/logos-blockchain-node
+
+# ===========================
+# NODE IMAGE
+# ===========================
+
+FROM debian:trixie-slim
+
+LABEL maintainer="augustinas@status.im" \
+    source="https://github.com/logos-blockchain/logos-blockchain" \
+    description="Logos blockchain node image (dev build)"
+
+COPY --from=circuits /opt/circuits /opt/circuits
+COPY --from=builder /usr/local/bin/logos-blockchain-node /usr/local/bin/logos-blockchain-node
+
+ENV LOGOS_BLOCKCHAIN_CIRCUITS=/opt/circuits
+
+EXPOSE 3000 8080 9000 60000
+
+ENTRYPOINT ["logos-blockchain-node"]
