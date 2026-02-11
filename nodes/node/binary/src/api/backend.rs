@@ -3,6 +3,7 @@
 use std::{
     fmt::{Debug, Display},
     marker::PhantomData,
+    time::Duration,
 };
 
 use axum::{
@@ -24,9 +25,10 @@ use lb_core::{
 use lb_http_api_common::paths;
 pub use lb_http_api_common::settings::AxumBackendSettings;
 use lb_sdp_service::{mempool::SdpMempoolAdapter, wallet::SdpWalletAdapter};
+use lb_services_utils::wait_until_services_are_ready;
 use lb_storage_service::{StorageService, backends::rocksdb::RocksBackend};
 use lb_tx_service::{TxMempoolService, backend::Mempool};
-use overwatch::{overwatch::handle::OverwatchHandle, services::AsServiceId};
+use overwatch::{DynError, overwatch::handle::OverwatchHandle, services::AsServiceId};
 use tokio::net::TcpListener;
 use tower::limit::ConcurrencyLimitLayer;
 use tower_http::{
@@ -157,6 +159,23 @@ where
         })
     }
 
+    async fn wait_until_ready(
+        &mut self,
+        overwatch_handle: OverwatchHandle<RuntimeServiceId>,
+    ) -> Result<(), DynError> {
+        wait_until_services_are_ready!(
+            &overwatch_handle,
+            Some(Duration::from_secs(60)),
+            Cryptarchia<_>,
+            ChainLeader,
+            lb_network_service::NetworkService<_, _>,
+            BlockStorageService<_>,
+            TxMempoolService<_, _, _,  _>
+        )
+        .await?;
+        Ok(())
+    }
+
     #[expect(clippy::too_many_lines, reason = "TODO: Address this at some point.")]
     async fn serve(self, handle: OverwatchHandle<RuntimeServiceId>) -> Result<(), Self::Error> {
         let mut builder = CorsLayer::new();
@@ -256,9 +275,7 @@ where
 
         let app = app
             .with_state(handle.clone())
-            .layer(axum::extract::DefaultBodyLimit::max(
-                self.settings.max_body_size,
-            ))
+            .layer(axum::extract::DefaultBodyLimit::max(self.settings.max_body_size))
             .layer(TimeoutLayer::new(self.settings.timeout))
             .layer(RequestBodyLimitLayer::new(self.settings.max_body_size))
             .layer(ConcurrencyLimitLayer::new(
